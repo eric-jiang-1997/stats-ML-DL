@@ -1,0 +1,204 @@
+---
+title: "Pricing Mechanism of Airbnb in New York City"
+author: "Eric Jiang, Mandy Chen"
+date: "4/22/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# data preparation packages
+library(readr)
+library(tidyverse)
+library(knitr)
+library(dplyr)
+# data visualization packages
+library(ggplot2)
+library(gridExtra)
+library(psych)
+library(ggiraph)
+library(ggiraphExtra)
+library(GGally)
+# for regression analysis
+library(car)
+# for clustering algorithms & visualization
+library(klaR)
+library(cluster)
+library(factoextra) 
+library(fpc)
+# for cross-validation
+library(caret)
+```
+
+## data preparation
+```{r,echo=FALSE}
+## input data
+setwd("/Users/ericjiang/Desktop/msci718_project")
+AB_NYC_2019 <- read_csv("AB_NYC_2019.csv")
+mydata<-AB_NYC_2019
+## change data type for later analysis
+mydata$neighbourhood_group<-as.factor(mydata$neighbourhood_group)
+mydata$neighbourhood<-as.factor(mydata$neighbourhood)
+mydata$room_type<-as.factor(mydata$room_type)
+## check missing values
+sum(is.na(mydata$last_review)==TRUE)
+sum(is.na(mydata$reviews_per_month)==TRUE) # only last_review and reviews_per_month have missing values, the overall data is clean
+## check the outliers of our focus - price
+boxplot(mydata$price) # a lot of extreme outliers above Q3+1.5 IQR, need to be processed
+summary(mydata$price) # mininum is 0, need to be checked further
+data_test<-mydata %>% filter(price>=500)
+count(data_test)/count(mydata)
+# Price over 500 per night only account for 2.5% of total airbnbs in NYC. Through research on Airbnb App, most of them are super luxury lofts or townhouses. Since in this dataset, other than price, we do not have any features to distinguish between normal and super luxury airbnbs, we focus our analysis on normal-price airbnb and consider those over 500 as outliers.
+data_test_1 <- mydata %>% filter(price==0)
+data_test_1 # 11 observations. price 0 might be due to system error or unavailability, we remove these abnormal values to avoid potential impacts on further analysis
+ab_0<-mydata %>% filter(price<500 & price!=0)
+ab_0
+str(ab_0)
+```
+
+## Part 1 - Price difference among differnet neighbourhood_group / room_type
+```{r,echo=FALSE}
+ab_1<-ab_0
+ggplot(ab_1,aes(neighbourhood_group,price))+geom_boxplot()
+ggplot(ab_1,aes(room_type,price))+geom_boxplot() # now the data(price) is in a smaller range, and the boxplots are much more readable
+## explore price difference between different neighbourhood_group/room_type using ggplot
+ggplot(ab_1,aes(neighbourhood_group,price))+geom_point(aes(color=room_type)) # for a certain neighbourhood_group, price: entire home>private room>shared room
+ggplot(ab_1,aes(room_type,price))+geom_point(aes(color=neighbourhood_group)) # for a certain room_type, price does not differ a lot
+```
+
+```{r,echo=FALSE}
+ggplot(ab_1,aes(price))+geom_histogram()
+ggplot(ab_1,aes(sample=price)) + stat_qq() + stat_qq_line() # normality check fails
+leveneTest(ab_1$price, ab_1$neighbourhood_group, center = median) 
+leveneTest(ab_1$price, ab_1$room_type, center = median)# homogeneity of variance check fails
+## Our initial intention was to use ANOVA. However, the two above tests fail, which means the assumptions of ANOVA are violated. Thus, we proceed with non-parametric methods.
+```
+
+```{r, echo=FALSE}
+## Kruskal-Wallis rank sum test to test whether the median price of various neighbouthood_group/room_type differs
+kruskal.test(price ~ neighbourhood_group, data = ab_1)
+kruskal.test(price ~ room_type, data = ab_1)
+## insert a picture in Tableau to better visualize and explain the results
+## To avoid too much complexity and to leave space for part 2 and 3, Wilcoxon rank sum test could be considered as further study to check which two neighbourhood groups have significant different prices.
+```
+
+## Part 2 - Cluster Analysis
+```{r, echo=FALSE}
+## to be consistent with part 1, only include prices below 500 and not equal to 0
+ab_2<-ab_0
+## modify the neighbourhood_group factor level based on the median price of each category
+ab_2$neighbourhood_group <- factor(ab_2$neighbourhood_group,levels=c("Manhattan","Brooklyn","Queens","Staten Island","Bronx"))
+## k-means cluster analysis require the variables to be numeric 
+ab_2$neighbourhood_group<-as.numeric(ab_2$neighbourhood_group)
+ab_2$neighbourhood<-as.numeric(ab_2$neighbourhood)
+ab_2$room_type<-as.numeric(ab_2$room_type)
+## select variables to include in cluster analysis
+# since we want to explore the category of airbnbs based on price, room type and neighbourhood group, we only include these 3 variables into the cluster analysis
+# also, missing values and outliers of these variables should be checked (from the beginning, we can see no missing values exist in these 3 variables)
+ab_2_new <- subset(ab_2,select=c(5,9,10))
+## delete null values (no need to do so since there is no null values in these 3 variables)
+## check extreme outliers
+par(mfrow=c(1,3))
+boxplot(ab_2_new$neighbourhood_group, main = "Neighbourhood Group")
+boxplot(ab_2_new$room_type, main = "Room type")
+boxplot(ab_2_new$price, main = "Price") # from these 3 boxplots, no apparent outliers
+## standardize variables
+ab_2_final <- scale(ab_2_new)
+#view(ab_2_final)
+```
+
+```{r}
+## Determine the number of clusters k 
+wss <- (nrow(ab_2_final)-1)*sum(apply(ab_2_final,2,var))
+for (i in 2:8) wss[i] <- sum(kmeans(ab_2_final, centers=i)$withinss)
+plot(1:8, wss, type="b", xlab="Number of Clusters k",
+  ylab="Within groups sum of squares")
+# k=4 is the optimal
+```
+
+```{r, echo=FALSE}
+## K-Means Cluster Analysis
+fit <- kmeans(ab_2_final, 4)
+## plot the clusters
+fviz_cluster(fit, data = ab_2_final)
+plotcluster(ab_2_final, fit$cluster)
+## get cluster means
+aggregate(ab_2_final,by=list(fit$cluster),FUN=mean) # important! need further explanation about the main features of these different categories!
+## get summary statistics to better understand the clusters
+summary(ab_2_final)
+## append cluster assignment (could use the cluster tag to study further)
+ab_2_final <- data.frame(ab_2_final, fit$cluster)
+```
+
+
+## Part 3 - Price prediction
+```{r, echo=FALSE}
+## to be consistent with part 1, only include prices below 500 and not equal to 0
+ab_3<-ab_0
+## create dummy variables for factor variables neighbourhood_group and room_type (we do not consider neighbour here as it contains too many levels and is hard to inteprete)
+ab_3$neighbourhood_group <- factor(ab_3$neighbourhood_group,levels=c("Manhattan","Brooklyn","Queens","Staten Island","Bronx"))
+levels(ab_3$neighbourhood_group)
+Manhattan_v_NMA <- c(1,0,0,0,0)
+Brooklyn_v_NMA <- c(0,1,0,0,0)
+Queens_v_NMA <- c(0,0,1,0,0)
+Staten_Island_v_NMA <- c(0,0,0,1,0)
+contrasts(ab_3$neighbourhood_group)<-cbind(Manhattan_v_NMA,Brooklyn_v_NMA,Queens_v_NMA,Staten_Island_v_NMA)
+contrasts(ab_3$neighbourhood_group)
+levels(ab_3$room_type)
+Entire_home_v_NMA<-c(1,0,0)
+Private_room_v_NMA<-c(0,1,0)
+contrasts(ab_3$room_type)<-cbind(Entire_home_v_NMA,Private_room_v_NMA)
+contrasts(ab_3$room_type)
+```
+
+```{r, echo=FALSE}
+## initially, we include all reasonable variables in the regression model except labels(id,name,host_id,host_name), neighbourhood(too many levels, do not make much sense in regression and hard to intepret), latitude and longitude(quite simialr in NYC and do not make much sense in regression), last_review(date format, not suitable for regression)
+ab_3_sub<-subset(ab_3,select=c(5,9,10,11,12,14,15,16))
+ggpairs(ab_3_sub) # 1) corr(number_of_reviews,reviews_per_month)=0.552>0.5, considering the missing values of reviews_per_month, we keep number_of_reviews and remove reviews_per_month 2) some outliers exist in minimum_nights, etc. We will log all of the non-nominal variables before running the regression model.
+ab_3_sub<-subset(ab_3,select=c(5,9,10,11,12,15,16))
+```
+
+```{r, echo=FALSE}
+## log non-nominal variables (!RUN ONLY ONE TIME!)
+for (i in seq(3,7,by=1)) {ab_3_sub[,i]<-log(ab_3_sub[,i]+1)}
+```
+
+```{r, echo=FALSE}
+## create regression model
+model.1 <- lm(formula = price ~ neighbourhood_group + room_type  + minimum_nights + number_of_reviews + calculated_host_listings_count + availability_365, data=ab_3_sub)
+summary(model.1) # no need to delete any variables from the model since all are significant
+## check multicolinearity
+vif(model.1)
+1/vif(model.1)
+mean(vif(model.1)) # problem of multicollinearity does not exist
+plot(model.1) # homoscedascity and normality checked
+durbinWatsonTest(model.1) # DW is very close to 2, no apparent concern of autocorrelation
+```
+
+
+```{r, echo=FALSE}
+## use k-fold cross-validation to evalute the performance of the above model
+set.seed(123) 
+train.control <- trainControl(method = "cv", number = 10)
+## train the model
+model.2 <- train(price ~ neighbourhood_group + room_type + minimum_nights + number_of_reviews  + calculated_host_listings_count + availability_365, data=ab_3_sub, method = "lm", trControl = train.control)
+#summary(model.2)
+print(model.2) # R squared almost not changed, our previous model is robust
+```
+
+```{r, echo=FALSE}
+## a further step: is there an interaction effect between neighbourhood_group and room_type?
+model.3 <- lm(formula = price ~ neighbourhood_group + room_type  + neighbourhood_group*room_type + minimum_nights + number_of_reviews + calculated_host_listings_count + availability_365, data=ab_3_sub)
+summary(model.3) # no apparent interaction effects, so we stick to model.1
+## plot the interaction effect
+interaction.plot(x.factor=ab_3_sub$neighbourhood_group,
+                 trace.factor = ab_3_sub$room_type,
+                 response = ab_3_sub$price)
+```
+
+```{r, echo=FALSE}
+## Summary and intepretation of the model.1
+summary(model.1)
+confint(model.1)
+# The price significantly increases as the location changes from Staten Island and Bronx to Queens, Brooklyn, Manhattan; the price significantly increases as the room type changes from shared room to private room, entire home.
+```
